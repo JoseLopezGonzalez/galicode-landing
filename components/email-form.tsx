@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from "motion/react"
 import type { Transition } from "motion/react"
 
 type Status = "idle" | "loading" | "success" | "error"
-type Mode = "subscribe" | "contact"
+export type Mode = "subscribe" | "contact"
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
@@ -16,7 +16,7 @@ function isValidEmail(email: string) {
 // Spring used for the pill slider and card resize
 const spring: Transition = { type: "spring", stiffness: 500, damping: 40, mass: 0.6 }
 
-export function EmailForm() {
+export function EmailForm({ onModeChange }: { onModeChange?: (mode: Mode) => void } = {}) {
   const [mode, setMode] = useState<Mode>("subscribe")
   const [email, setEmail] = useState("")
   const [message, setMessage] = useState("")
@@ -26,6 +26,7 @@ export function EmailForm() {
   function handleModeChange(next: Mode) {
     if (next === mode) return
     setMode(next)
+    onModeChange?.(next)
     setStatus("idle")
     setErrorMsg("")
   }

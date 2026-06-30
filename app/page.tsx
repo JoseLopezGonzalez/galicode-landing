@@ -1,18 +1,18 @@
 import { Logo } from "@/components/logo"
-import { EmailForm } from "@/components/email-form"
+import { ContactSection } from "@/components/contact-section"
 import { OceanShader } from "@/components/ocean-shader"
 
 // ─── Copy constants — edit here to update all visible text ───────────────────
 const COPY = {
   heading: "Web en construcción",
-  tagline: "Especialistas en producto del mar. Muy pronto.",
+  tagline: "Especialistas en productos del mar.",
   cta: "Recibe novedades, tarifas y ofertas, o escríbenos directamente con tu consulta.",
   legal:
     "Al enviarnos tu email, aceptas que Galicode Vigo S.L. lo use para responderte y enviarte información comercial relevante. Sin spam.",
   footer: {
     name: "Galicode Vigo S.L.",
     nif: "NIF ESB27865492",
-    email: "gestion@galicode.com",
+    emails: ["gestion@galicode.com", "info@galicode.com"],
     address: "Calle Rosalía de Castro, 1 · Loc. 9 · 36001 Pontevedra",
   },
 } as const
@@ -31,21 +31,7 @@ export default function Page() {
           </h1>
         </div>
 
-        {/* Email form */}
-        <div className="w-full animate-in fade-in slide-in-from-bottom-4 duration-700 delay-300">
-          <EmailForm />
-        </div>
-
-        {/* Supporting text */}
-        <div className="animate-in fade-in duration-700 delay-500 flex flex-col gap-2">
-          <p className="text-base leading-relaxed text-white/85">{COPY.tagline}</p>
-          <p className="text-sm leading-relaxed text-white/65">{COPY.cta}</p>
-        </div>
-
-        {/* GDPR notice */}
-        <p className="animate-in fade-in duration-700 delay-700 text-xs leading-relaxed text-white/40">
-          {COPY.legal}
-        </p>
+        <ContactSection tagline={COPY.tagline} cta={COPY.cta} legal={COPY.legal} />
       </div>
 
       {/* Footer legal */}
@@ -54,12 +40,19 @@ export default function Page() {
           <span>
             {COPY.footer.name} · {COPY.footer.nif} · {COPY.footer.address}
           </span>
-          <a
-            href={`mailto:${COPY.footer.email}`}
-            className="transition-colors hover:text-white/50 focus-visible:text-white/50 focus-visible:outline-none focus-visible:underline"
-          >
-            {COPY.footer.email}
-          </a>
+          <span className="flex items-center gap-2">
+            {COPY.footer.emails.map((email, i) => (
+              <span key={email} className="flex items-center gap-2">
+                {i > 0 && <span aria-hidden="true">·</span>}
+                <a
+                  href={`mailto:${email}`}
+                  className="transition-colors hover:text-white/50 focus-visible:text-white/50 focus-visible:outline-none focus-visible:underline"
+                >
+                  {email}
+                </a>
+              </span>
+            ))}
+          </span>
         </div>
       </footer>
     </main>

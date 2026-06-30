@@ -20,7 +20,7 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://galicode.com"
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: "Galicode Vigo — Próximamente",
+  title: "Galicode Vigo S.L.",
   description:
     "Galicode Vigo S.L., empresa distribuidora con sede en Pontevedra. Muy pronto, una presencia digital a la altura de lo que somos.",
   keywords: [
