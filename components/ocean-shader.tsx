@@ -19,12 +19,20 @@ const FRAG = `
 precision highp float;
 uniform float uTime;
 uniform vec2  uRes;
+uniform vec2  uMouse;  // pointer pos in aspect-corrected centred space; offscreen until moved
 
 #define TAU 6.28318530718
 
 vec2 hash2(vec2 p) {
   p = vec2(dot(p, vec2(127.1,311.7)), dot(p, vec2(269.5,183.3)));
   return fract(sin(p) * 43758.5453) * 2.0 - 1.0;
+}
+
+// Scalar hash for film grain (Dave Hoskins hash12)
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
 }
 
 float gnoise(vec2 p) {
@@ -36,36 +44,50 @@ float gnoise(vec2 p) {
     u.y);
 }
 
-float fbm(vec2 p) {
-  float v=0.0, a=0.5;
-  mat2 m=mat2(1.6,1.2,-1.2,1.6);
-  for(int i=0;i<6;i++){v+=a*gnoise(p);p=m*p;a*=0.5;}
-  return v;
-}
+const mat2 ROT = mat2(1.6,1.2,-1.2,1.6);
+float fbm5(vec2 p){float v=0.0,a=0.5;for(int i=0;i<5;i++){v+=a*gnoise(p);p=ROT*p;a*=0.5;}return v;}
+float fbm3(vec2 p){float v=0.0,a=0.5;for(int i=0;i<3;i++){v+=a*gnoise(p);p=ROT*p;a*=0.5;}return v;}
 
 // Slow large-scale currents (depth / colour variation under the surface)
 float currents(vec2 p, float t) {
-  vec2 q=vec2(fbm(p+t*0.06), fbm(p+vec2(5.2,1.3)+t*0.06));
-  vec2 r=vec2(fbm(p+2.0*q+vec2(1.7,9.2)+t*0.04),
-              fbm(p+2.0*q+vec2(8.3,2.8)+t*0.04));
-  return fbm(p+2.4*r)*0.5+0.5;
+  vec2 q=vec2(fbm5(p+t*0.06), fbm5(p+vec2(5.2,1.3)+t*0.06));
+  vec2 r=vec2(fbm5(p+2.0*q+vec2(1.7,9.2)+t*0.04),
+              fbm5(p+2.0*q+vec2(8.3,2.8)+t*0.04));
+  return fbm5(p+2.4*r)*0.5+0.5;
 }
 
-// Classic iterative water caustics — the recognisable "pool seen from above" veins.
-// Each iteration distorts a tiled domain and accumulates inverse-distance brightness.
+// Surface elevation field — drives normals (lighting), specular glints and foam crests
+float waveHeight(vec2 p, float t) {
+  float h = fbm3(p*1.4 + vec2(t*0.08, t*0.05) + fbm3(p*0.8 - t*0.03));
+  return h*0.5+0.5;
+}
+
+// Surface normal via finite differences of the height field
+vec3 surfaceNormal(vec2 p, float t) {
+  float e=0.012;
+  float hL=waveHeight(p-vec2(e,0.0),t);
+  float hR=waveHeight(p+vec2(e,0.0),t);
+  float hD=waveHeight(p-vec2(0.0,e),t);
+  float hU=waveHeight(p+vec2(0.0,e),t);
+  return normalize(vec3(hL-hR, hD-hU, e*4.0));
+}
+
+// Iterative water caustics — recognisable "pool seen from above" veins.
+// NOTE: this works in continuous (non-tiled) coordinates — no mod() — so the
+// pattern never repeats across the screen. Caller feeds warped, scale-varied UVs.
 float caustic(vec2 uv, float time) {
-  vec2 p = mod(uv * TAU, TAU) - 250.0;
+  vec2 p = uv;
   vec2 i = p;
   float c = 1.0;
   float inten = 0.0045;
-  for (int n = 0; n < 6; n++) {
+  for (int n = 0; n < 5; n++) {
     float t = time * (1.0 - (3.5 / float(n + 1)));
     i = p + vec2(cos(t - i.x) + sin(t + i.y),
                  sin(t - i.y) + cos(t + i.x));
     c += 1.0 / length(vec2(p.x / (sin(i.x + t) / inten),
                            p.y / (cos(i.y + t) / inten)));
   }
-  c /= 6.0;
+  c /= 5.0;
   c = 1.17 - pow(c, 1.4);
   return clamp(pow(abs(c), 8.0), 0.0, 1.0);
 }
@@ -88,9 +110,9 @@ vec3 palette(float t) {
 // Drifts very slowly; only shows through where the water is darker (shallower light).
 vec3 seabed(vec2 p, float t) {
   vec2 q = p*1.1 + vec2(t*0.008, t*0.004);
-  float rock  = fbm(q*2.2);            // medium rock clusters
-  float grain = fbm(q*8.0)*0.5+0.5;    // fine sand grain
-  float patch = fbm(q*0.7)*0.5+0.5;    // large rock/sand patches
+  float rock  = fbm3(q*2.2);            // medium rock clusters
+  float grain = fbm3(q*8.0)*0.5+0.5;    // fine sand grain
+  float patch = fbm3(q*0.7)*0.5+0.5;    // large rock/sand patches
   float bed   = clamp(rock*0.6+0.5,0.0,1.0);
   vec3 wetSand = vec3(0.165,0.140,0.092); // dark wet sand
   vec3 rockGrn = vec3(0.062,0.105,0.090); // greenish rock
@@ -104,67 +126,123 @@ vec3 seabed(vec2 p, float t) {
 // Sea foam: thin wispy bright streaks drifting on the surface — patchy, not uniform.
 float foam(vec2 p, float t) {
   vec2 q = p*1.4 + vec2(t*0.025, t*0.012);
-  float ridge = fbm(q*2.6 + fbm(q*1.3));  // domain-warped field
-  ridge = 1.0 - abs(ridge)*2.4;           // bright where field crosses zero
+  float ridge = fbm3(q*2.6 + fbm3(q*1.3)); // domain-warped field
+  ridge = 1.0 - abs(ridge)*2.4;            // bright where field crosses zero
   ridge = clamp(ridge, 0.0, 1.0);
-  ridge = pow(ridge, 2.5);                // thin the streaks
-  float mask = smoothstep(0.50, 0.92, fbm(q*0.6 + t*0.015)*0.5+0.5);
-  return ridge * mask;                    // foam only in scattered patches
+  ridge = pow(ridge, 2.5);                 // thin the streaks
+  float mask = smoothstep(0.50, 0.92, fbm3(q*0.6 + t*0.015)*0.5+0.5);
+  return ridge * mask;                     // foam only in scattered patches
 }
 
 void main() {
   vec2 uv=gl_FragCoord.xy/uRes;
-  vec2 p=(uv-0.5)*vec2(uRes.x/uRes.y,1.0);
+  float asp=uRes.x/uRes.y;
+  vec2 p=(uv-0.5)*vec2(asp,1.0);
   float t=uTime;
+
+  // ── (6) Slow camera drift — the dron breathes, breaking the loop feel ─────
+  vec2 drift = vec2(sin(t*0.015), cos(t*0.012)) * 0.035;
+
+  // ── (8) Pointer interaction — a decaying ripple where the cursor touches ──
+  vec2 toM = p - uMouse;
+  float dM = length(toM);
+  float ripple = sin(dM*20.0 - t*3.2) * exp(-dM*5.0) * 0.012;
+  vec2 warpOff = drift + normalize(toM + 1e-5) * ripple;
+
+  p += warpOff;
+  uv += warpOff / vec2(asp,1.0);
 
   // ── Base layer: deep-water depth/colour from slow currents ────────────────
   vec2 pc = p*2.0;
   float depth = currents(pc, t);
 
-  // ── Caustic coordinate: warp the sampling domain with the currents so the
-  //    light veins drift organically with the water (not a rigid grid) ───────
-  vec2 cuv = uv*vec2(uRes.x/uRes.y,1.0)*1.6;
-  cuv += 0.18*vec2(fbm(pc*1.5+t*0.05), fbm(pc*1.5+vec2(3.1,7.7)+t*0.05));
+  // ── (3) Bathymetry — large slow field: shallows (turquoise) vs deep (dark) ─
+  float bathy = fbm3(p*0.45 + vec2(t*0.012, 0.0))*0.5+0.5;
+
+  // ── (1) Surface normal + sun direction → coherent lighting ────────────────
+  vec3 n = surfaceNormal(p*2.0, t);
+  vec3 L = normalize(vec3(-0.55, 0.50, 0.72)); // sun, upper-left
+  vec3 V = vec3(0.0, 0.0, 1.0);                // zenith view
+  vec3 Hh = normalize(L + V);
+  float ndl = clamp(dot(n, L)*0.5 + 0.5, 0.0, 1.0);
+
+  // ── Caustic coordinate — engineered to NEVER show a repeating tile ─────────
+  // (a) base UVs span several radians of the continuous caustic field
+  vec2 cuv = (uv - 0.5) * vec2(asp,1.0) * 9.0;
+  // (b) strong low-frequency domain warp → displaces every region differently
+  cuv += 1.4 * vec2(fbm3(pc*0.55 + t*0.03),
+                    fbm3(pc*0.55 + vec2(11.0,5.0) + t*0.03));
+  // (c) spatial scale variation → apparent cell size drifts across the screen,
+  //     so the eye can't lock onto a uniform grid
+  float scaleVar = 1.0 + 0.40*fbm3(pc*0.4 + 3.0);
+  cuv *= scaleVar;
   float ct = t*0.18 + 23.0;
 
-  // ── Chromatic dispersion: sample caustics at 3 slightly offset scales for
-  //    a subtle prismatic edge on the brightest veins (modern, photographic) ─
-  float cr = caustic(cuv*1.005, ct);
+  // (d) chromatic dispersion on the primary octave (prismatic vein edges)
+  float cr = caustic(cuv*1.006, ct);
   float cg = caustic(cuv,       ct);
-  float cb = caustic(cuv*0.995, ct);
-  float caust = (cr+cg+cb)/3.0;
+  float cb = caustic(cuv*0.994, ct);
+
+  // (e) second octave: rotated + rescaled + offset, different speed → overlaps
+  //     the first so any residual periodicity is masked
+  mat2 rot = mat2(0.80,-0.60, 0.60,0.80);
+  float c2 = caustic(rot*cuv*1.7 + 31.0, ct*0.83);
+
+  // blend octaves; max keeps veins crisp, average keeps brightness controlled
+  float caust = max((cr+cg+cb)/3.0, c2) * 0.62 + ((cr+cg+cb)/3.0 + c2) * 0.19;
+  caust = clamp(caust, 0.0, 1.0);
 
   // ── Seabed substrate (rock/sand) — sits beneath the water column ──────────
   vec3 bed = seabed(p*2.0, t);
 
-  // Base water colour driven by depth + a lift from the caustic field
-  vec3 water = palette(depth*0.55 + caust*0.55);
+  // Base water colour: depth + caustic lift + shallows brighten it
+  float waterT = depth*0.40 + caust*0.45 + bathy*0.30;
+  vec3 water = palette(clamp(waterT, 0.0, 1.0));
+  // (3) extra turquoise tint over the shallow banks
+  water = mix(water, water*vec3(0.72,1.18,1.10)+vec3(0.0,0.04,0.05),
+              smoothstep(0.55,0.95,bathy)*0.55);
 
-  // Turbidity: sea water is murkier than a pool — let the bottom show through
-  // most in the darker/shallower patches, and tint the whole column greener.
-  float clarity = smoothstep(0.15, 0.75, depth*0.6 + caust*0.7);
+  // (3) Turbidity tied to depth: bottom shows most in dark/shallow patches
+  float clarity = smoothstep(0.10, 0.70, depth*0.4 + caust*0.6 + bathy*0.4);
   vec3 col = mix(bed, water, clarity);
-  col = mix(col, col*vec3(0.86,1.04,0.96), 0.35); // subtle green-sea cast
+  col = mix(col, col*vec3(0.86,1.04,0.96), 0.30); // green-sea cast
 
-  // Add the refracted light as additive teal-white glow with chromatic tint.
-  // Attenuate the glow where the seabed dominates (light scatters in murk).
-  vec3 causticGlow = vec3(cr*0.55, cg*0.85, cb*1.0);
-  col += causticGlow * 0.78 * (0.4 + 0.6*clarity);
+  // Refracted light as additive teal-white glow, attenuated in the murk.
+  // Both octaves contribute so the second layer's veins glow too.
+  vec3 causticGlow = vec3(cr*0.55, cg*0.85, cb*1.0) + vec3(0.45,0.78,0.92)*c2;
+  col += causticGlow * 0.52 * (0.4 + 0.6*clarity);
 
-  // ── Sea foam — drifting bright streaks on the surface ─────────────────────
-  float fm = foam(p*2.0, t);
-  vec3 foamCol = vec3(0.78,0.88,0.90);            // cool off-white
-  col = mix(col, foamCol, fm*0.55);
+  // ── (1) Apply sun-driven shading to the whole column ──────────────────────
+  col *= 0.78 + 0.42*ndl;
 
-  // Warm copper sparkle only on the very brightest crests (≤ design-system spirit)
-  float spark = smoothstep(0.72, 1.0, caust);
-  col += vec3(0.45,0.22,0.08) * spark * 0.26;
+  // ── (2) Specular glints — sun reflecting off micro-ripples (surface light) ─
+  float spec = pow(max(dot(n, Hh), 0.0), 48.0);
+  float sparkleGate = smoothstep(0.62, 0.95, fbm3(p*16.0 + t*0.4)*0.5+0.5);
+  spec *= 0.55 + 0.8*sparkleGate;
+  col += vec3(0.85,0.93,1.0) * spec * 0.9 * clarity;
 
-  // Gentle vignette in-shader to seat the content (UI overlay adds the rest)
+  // ── (4) Sea foam — born on wave crests, dissolving over time ──────────────
+  float crest = smoothstep(0.62, 0.92, waveHeight(p*2.0, t));
+  float wisp  = foam(p*2.0, t);
+  float dissolve = smoothstep(0.30, 0.72, fbm3(p*3.0 + t*0.22)*0.5+0.5);
+  float fm = clamp(max(wisp, crest*0.7) * dissolve, 0.0, 1.0);
+  vec3 foamCol = vec3(0.80,0.89,0.92);
+  col = mix(col, foamCol, fm*0.5);
+
+  // ── (7) Copper bioluminescence — sparse warm glints in the dark deep water ─
+  float bioField = fbm3(p*7.0 - vec2(t*0.08, t*0.05))*0.5+0.5;
+  float bio = smoothstep(0.86, 0.99, bioField) * smoothstep(0.55, 0.05, waterT);
+  col += vec3(0.62,0.30,0.10) * bio * 0.55;
+
+  // Vignette to seat the content
   col *= 1.0 - 0.35*pow(length(p*vec2(0.9,1.0)), 2.2);
 
-  // Subtle filmic tone curve for richer, less flat output
+  // Filmic tone curve for richer, less flat output
   col = col/(col+vec3(0.85)) * 1.35;
+
+  // ── (5) Film grain / dither — kills banding, adds editorial finish ────────
+  float g = hash12(gl_FragCoord.xy + fract(t)*137.0);
+  col += (g - 0.5) * 0.028;
 
   gl_FragColor=vec4(col,1.0);
 }
@@ -223,19 +301,36 @@ export function OceanShader() {
     gl.enableVertexAttribArray(aPos)
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0)
 
-    const uTime = gl.getUniformLocation(prog, 'uTime')
-    const uRes  = gl.getUniformLocation(prog, 'uRes')
+    const uTime  = gl.getUniformLocation(prog, 'uTime')
+    const uRes   = gl.getUniformLocation(prog, 'uRes')
+    const uMouse = gl.getUniformLocation(prog, 'uMouse')
 
+    let aspect = 1
     const resize = () => {
-      // Cap at 2× DPR for performance; shader is soft so upscaling looks fine
-      const dpr = Math.min(devicePixelRatio, 2)
+      // Cap DPR for performance; shader is soft so mild upscaling looks fine
+      const dpr = Math.min(devicePixelRatio, 1.75)
       canvas.width  = Math.round(window.innerWidth  * dpr)
       canvas.height = Math.round(window.innerHeight * dpr)
+      aspect = canvas.width / canvas.height
       gl.viewport(0, 0, canvas.width, canvas.height)
       gl.uniform2f(uRes, canvas.width, canvas.height)
     }
     window.addEventListener('resize', resize)
     resize()
+
+    // Pointer ripple — target updated on move, smoothed each frame.
+    // Start offscreen so there's no ripple until the user actually moves.
+    const target = { x: -10, y: -10 }
+    const smooth = { x: -10, y: -10 }
+    const onPointerMove = (e: PointerEvent) => {
+      const nx = e.clientX / window.innerWidth
+      const ny = e.clientY / window.innerHeight
+      target.x = (nx - 0.5) * aspect
+      target.y = 0.5 - ny // flip Y to match shader space
+    }
+    const onPointerLeave = () => { target.x = -10; target.y = -10 }
+    window.addEventListener('pointermove', onPointerMove, { passive: true })
+    window.addEventListener('pointerleave', onPointerLeave)
 
     let rafId = 0
     let paused = false
@@ -247,6 +342,9 @@ export function OceanShader() {
     const tick = () => {
       rafId = requestAnimationFrame(tick)
       if (paused) return
+      smooth.x += (target.x - smooth.x) * 0.06
+      smooth.y += (target.y - smooth.y) * 0.06
+      gl.uniform2f(uMouse, smooth.x, smooth.y)
       gl.uniform1f(uTime, (performance.now() - t0) / 1000)
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
     }
@@ -256,6 +354,8 @@ export function OceanShader() {
       cancelAnimationFrame(rafId)
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('resize', resize)
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerleave', onPointerLeave)
       gl.deleteBuffer(buf)
       gl.deleteProgram(prog)
     }

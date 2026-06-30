@@ -182,7 +182,7 @@ export function EmailForm() {
                     type="submit"
                     disabled={status === "loading"}
                     aria-label="Suscribirme"
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-[#06121e] transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white disabled:opacity-50"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-[#06121e] transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white disabled:opacity-50"
                   >
                     {status === "loading"
                       ? <Loader2 className="h-4 w-4 animate-spin" />
