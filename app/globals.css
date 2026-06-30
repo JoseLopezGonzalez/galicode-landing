@@ -122,12 +122,13 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
-    /* Fallback dark bg — ensures no white flash before WebGL canvas initialises */
-    background-color: #06121e;
+    @apply text-foreground;
+    /* transparent so the WebGL canvas behind it shows through */
+    background-color: transparent;
   }
   html {
     @apply font-sans;
+    /* #06121e on <html> = SSR/no-JS fallback; body stays transparent */
     background-color: #06121e;
   }
 }

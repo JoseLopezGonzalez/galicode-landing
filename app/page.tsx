@@ -22,7 +22,7 @@ export default function Page() {
     <main className="relative flex min-h-svh flex-col items-center justify-center px-6 py-16 text-white">
       <OceanShader />
 
-      <div className="flex w-full max-w-xl flex-col items-center gap-8 text-center sm:max-w-2xl">
+      <div className="relative z-10 flex w-full max-w-xl flex-col items-center gap-8 text-center sm:max-w-2xl">
         {/* Logo + Heading */}
         <div className="animate-in fade-in slide-in-from-top-4 flex flex-col items-center gap-5 duration-700">
           <Logo />
@@ -49,7 +49,7 @@ export default function Page() {
       </div>
 
       {/* Footer legal */}
-      <footer className="absolute bottom-6 left-0 right-0 animate-in fade-in duration-700 delay-700">
+      <footer className="absolute bottom-6 left-0 right-0 z-10 animate-in fade-in duration-700 delay-700">
         <div className="flex flex-col items-center gap-1 text-center text-[11px] leading-relaxed text-white/30">
           <span>
             {COPY.footer.name} · {COPY.footer.nif} · {COPY.footer.address}

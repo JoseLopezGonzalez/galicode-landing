@@ -104,38 +104,28 @@ export function EmailForm() {
     <div className="flex w-full flex-col items-center gap-3">
 
       {/* ── Mode toggle ── */}
-      <div className="relative flex rounded-full border border-white/12 bg-[rgba(6,18,30,0.45)] p-1 backdrop-blur-md">
-        {/*
-          Single pill element that slides via translateX.
-          Both buttons are flex-1 so each occupies exactly 50% of the inner area.
-          Pill width = calc(50% - 4px) so it fits inside the padding.
-          When "contact", translate by 100% of own width = the other half.
-        */}
-        <motion.span
-          aria-hidden
-          className="pointer-events-none absolute top-1 bottom-1 left-1 rounded-full bg-white"
-          style={{ width: "calc(50% - 4px)" }}
-          animate={{ x: mode === "contact" ? "100%" : "0%" }}
-          transition={spring}
-        />
-        <button
-          type="button"
-          onClick={() => handleModeChange("subscribe")}
-          className={`relative z-10 flex-1 whitespace-nowrap rounded-full px-5 py-1.5 text-xs font-medium transition-colors duration-150 ${
-            mode === "subscribe" ? "text-[#06121e]" : "text-white/50 hover:text-white/80"
-          }`}
-        >
-          Novedades y tarifas
-        </button>
-        <button
-          type="button"
-          onClick={() => handleModeChange("contact")}
-          className={`relative z-10 flex-1 whitespace-nowrap rounded-full px-5 py-1.5 text-xs font-medium transition-colors duration-150 ${
-            mode === "contact" ? "text-[#06121e]" : "text-white/50 hover:text-white/80"
-          }`}
-        >
-          Contactar
-        </button>
+      <div className="flex rounded-full border border-white/12 bg-[rgba(6,18,30,0.45)] p-1 backdrop-blur-md">
+        {(["subscribe", "contact"] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => handleModeChange(m)}
+            className={`relative rounded-full px-5 py-1.5 text-xs font-medium transition-colors duration-150 ${
+              mode === m ? "text-[#06121e]" : "text-white/50 hover:text-white/80"
+            }`}
+          >
+            {mode === m && (
+              <motion.span
+                layoutId="tab-pill"
+                className="absolute inset-0 rounded-full bg-white"
+                transition={spring}
+              />
+            )}
+            <span className="relative z-10">
+              {m === "subscribe" ? "Novedades y tarifas" : "Contactar"}
+            </span>
+          </button>
+        ))}
       </div>
 
       <form
@@ -156,7 +146,7 @@ export function EmailForm() {
           layout
           transition={spring}
           className="relative w-full overflow-hidden border border-white/12"
-          style={{ borderRadius: mode === "subscribe" ? 9999 : 16, willChange: "transform" }}
+          style={{ borderRadius: 16, willChange: "transform" }}
         >
           {/* Static blur layer — not animated, so no per-frame blur repaint */}
           <div className="pointer-events-none absolute inset-0 bg-[rgba(6,18,30,0.45)] backdrop-blur-md" />
