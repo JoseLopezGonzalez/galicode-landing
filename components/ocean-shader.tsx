@@ -20,6 +20,9 @@ precision highp float;
 uniform float uTime;
 uniform vec2  uRes;
 uniform vec2  uMouse;  // pointer pos in aspect-corrected centred space; offscreen until moved
+uniform sampler2D uTex; // real seabed photo
+uniform float uHasTex;  // 1.0 once the seabed texture has loaded, else 0.0
+uniform vec2  uTexRes;  // seabed image pixel size (for cover-fit)
 
 #define TAU 6.28318530718
 
@@ -73,10 +76,11 @@ vec3 surfaceNormal(vec2 p, float t) {
 }
 
 // Iterative water caustics — recognisable "pool seen from above" veins.
-// NOTE: this works in continuous (non-tiled) coordinates — no mod() — so the
-// pattern never repeats across the screen. Caller feeds warped, scale-varied UVs.
+// mod() gives the crisp, well-formed vein shapes. The CALLER breaks any visible
+// tiling by phase-shifting the input with low-frequency warp + scale variation,
+// which displaces each repeat differently without smearing the shapes.
 float caustic(vec2 uv, float time) {
-  vec2 p = uv;
+  vec2 p = mod(uv * TAU, TAU) - 250.0;
   vec2 i = p;
   float c = 1.0;
   float inten = 0.0045;
@@ -123,6 +127,22 @@ vec3 seabed(vec2 p, float t) {
   return c;
 }
 
+// Real seabed photo, cover-fitted to the screen and refracted by the water.
+// 'refract' is a small UV offset (from surface normal) so the bottom ripples.
+vec3 seabedPhoto(vec2 uv, vec2 refract) {
+  // cover-fit: scale the image to fill the screen without distortion
+  float scrA = uRes.x / uRes.y;
+  float texA = uTexRes.x / uTexRes.y;
+  vec2 st = uv;
+  if (scrA > texA) {            // screen wider than image → fit width, crop height
+    st.y = (uv.y - 0.5) * (texA / scrA) + 0.5;
+  } else {                      // screen taller → fit height, crop width
+    st.x = (uv.x - 0.5) * (scrA / texA) + 0.5;
+  }
+  st += refract;
+  return texture2D(uTex, clamp(st, 0.001, 0.999)).rgb;
+}
+
 // Sea foam: thin wispy bright streaks drifting on the surface — patchy, not uniform.
 float foam(vec2 p, float t) {
   vec2 q = p*1.4 + vec2(t*0.025, t*0.012);
@@ -166,60 +186,69 @@ void main() {
   vec3 Hh = normalize(L + V);
   float ndl = clamp(dot(n, L)*0.5 + 0.5, 0.0, 1.0);
 
-  // ── Caustic coordinate — engineered to NEVER show a repeating tile ─────────
-  // (a) base UVs span several radians of the continuous caustic field
-  vec2 cuv = (uv - 0.5) * vec2(asp,1.0) * 9.0;
-  // (b) strong low-frequency domain warp → displaces every region differently
-  cuv += 1.4 * vec2(fbm3(pc*0.55 + t*0.03),
-                    fbm3(pc*0.55 + vec2(11.0,5.0) + t*0.03));
-  // (c) spatial scale variation → apparent cell size drifts across the screen,
-  //     so the eye can't lock onto a uniform grid
-  float scaleVar = 1.0 + 0.40*fbm3(pc*0.4 + 3.0);
-  cuv *= scaleVar;
+  // ── Caustic coordinate — crisp veins (mod) with the tiling fully broken ───
+  // The mod() tile repeats every ~1.0 in cuv space. To destroy any visible
+  // repetition we displace the domain by MORE than a full tile, with detail at
+  // roughly the repeat frequency, so every repeat lands somewhere different.
+  vec2 cuv = uv*vec2(asp,1.0)*1.6;
+
+  // (b) two-octave domain warp, amplitude ~0.8 tile → neighbouring repeats decorrelate
+  vec2 w  = vec2(fbm3(pc*0.9 + t*0.03),
+                 fbm3(pc*0.9 + vec2(11.0,5.0) + t*0.03));
+  w      += 0.5*vec2(fbm3(pc*1.9 - t*0.02),
+                     fbm3(pc*1.9 + vec2(4.0,9.0) - t*0.02));
+  cuv    += 0.80 * w;
+
+  // (c) spatial scale variation → cell size drifts, no uniform grid
+  cuv *= 1.0 + 0.25*fbm3(pc*0.5 + 3.0);
+
+  // (d) gentle per-region rotation → further decorrelates the tile orientation
+  float ang = 0.6*fbm3(pc*0.4 + 10.0);
+  float sa = sin(ang), ca = cos(ang);
+  cuv = mat2(ca,-sa,sa,ca) * cuv;
+
   float ct = t*0.18 + 23.0;
 
-  // (d) chromatic dispersion on the primary octave (prismatic vein edges)
+  // (e) chromatic dispersion → prismatic vein edges
   float cr = caustic(cuv*1.006, ct);
   float cg = caustic(cuv,       ct);
   float cb = caustic(cuv*0.994, ct);
+  float caust = (cr+cg+cb)/3.0;
 
-  // (e) second octave: rotated + rescaled + offset, different speed → overlaps
-  //     the first so any residual periodicity is masked
-  mat2 rot = mat2(0.80,-0.60, 0.60,0.80);
-  float c2 = caustic(rot*cuv*1.7 + 31.0, ct*0.83);
+  // ── Seabed substrate — real photo (refracted) when loaded, else procedural ─
+  // Refraction: offset the lookup by the surface slope + a slow ripple, so the
+  // bottom wobbles as if seen through moving water.
+  vec2 refr = -n.xy * 0.020
+            + 0.007*vec2(fbm3(pc*1.2 + t*0.05),
+                         fbm3(pc*1.2 + 7.0 + t*0.05));
+  vec3 bed = mix(seabed(p*2.0, t), seabedPhoto(uv, refr), uHasTex);
+  // Caustic light pools on the rock/sand (physically the veins fall on the bed)
+  bed *= 0.80 + 0.75*caust;
 
-  // blend octaves; max keeps veins crisp, average keeps brightness controlled
-  float caust = max((cr+cg+cb)/3.0, c2) * 0.62 + ((cr+cg+cb)/3.0 + c2) * 0.19;
-  caust = clamp(caust, 0.0, 1.0);
-
-  // ── Seabed substrate (rock/sand) — sits beneath the water column ──────────
-  vec3 bed = seabed(p*2.0, t);
-
-  // Base water colour: depth + caustic lift + shallows brighten it
-  float waterT = depth*0.40 + caust*0.45 + bathy*0.30;
+  // Base water colour: depth + caustic lift + a little from the shallows
+  float waterT = depth*0.42 + caust*0.42 + bathy*0.18;
   vec3 water = palette(clamp(waterT, 0.0, 1.0));
-  // (3) extra turquoise tint over the shallow banks
-  water = mix(water, water*vec3(0.72,1.18,1.10)+vec3(0.0,0.04,0.05),
-              smoothstep(0.55,0.95,bathy)*0.55);
+  // (3) gentle turquoise tint over the shallow banks (kept subtle)
+  water = mix(water, water*vec3(0.78,1.12,1.06)+vec3(0.0,0.02,0.03),
+              smoothstep(0.60,0.95,bathy)*0.32);
 
   // (3) Turbidity tied to depth: bottom shows most in dark/shallow patches
   float clarity = smoothstep(0.10, 0.70, depth*0.4 + caust*0.6 + bathy*0.4);
   vec3 col = mix(bed, water, clarity);
   col = mix(col, col*vec3(0.86,1.04,0.96), 0.30); // green-sea cast
 
-  // Refracted light as additive teal-white glow, attenuated in the murk.
-  // Both octaves contribute so the second layer's veins glow too.
-  vec3 causticGlow = vec3(cr*0.55, cg*0.85, cb*1.0) + vec3(0.45,0.78,0.92)*c2;
-  col += causticGlow * 0.52 * (0.4 + 0.6*clarity);
+  // Refracted light as additive teal-white glow, attenuated in the murk
+  vec3 causticGlow = vec3(cr*0.55, cg*0.85, cb*1.0);
+  col += causticGlow * 0.42 * (0.4 + 0.6*clarity);
 
-  // ── (1) Apply sun-driven shading to the whole column ──────────────────────
-  col *= 0.78 + 0.42*ndl;
+  // ── (1) Apply sun-driven shading to the whole column (subtle, keeps depth) ─
+  col *= 0.82 + 0.26*ndl;
 
   // ── (2) Specular glints — sun reflecting off micro-ripples (surface light) ─
-  float spec = pow(max(dot(n, Hh), 0.0), 48.0);
+  float spec = pow(max(dot(n, Hh), 0.0), 56.0);
   float sparkleGate = smoothstep(0.62, 0.95, fbm3(p*16.0 + t*0.4)*0.5+0.5);
   spec *= 0.55 + 0.8*sparkleGate;
-  col += vec3(0.85,0.93,1.0) * spec * 0.9 * clarity;
+  col += vec3(0.85,0.93,1.0) * spec * 0.55 * clarity;
 
   // ── (4) Sea foam — born on wave crests, dissolving over time ──────────────
   float crest = smoothstep(0.62, 0.92, waveHeight(p*2.0, t));
@@ -238,7 +267,7 @@ void main() {
   col *= 1.0 - 0.35*pow(length(p*vec2(0.9,1.0)), 2.2);
 
   // Filmic tone curve for richer, less flat output
-  col = col/(col+vec3(0.85)) * 1.35;
+  col = col/(col+vec3(0.92)) * 1.28;
 
   // ── (5) Film grain / dither — kills banding, adds editorial finish ────────
   float g = hash12(gl_FragCoord.xy + fract(t)*137.0);
@@ -301,9 +330,38 @@ export function OceanShader() {
     gl.enableVertexAttribArray(aPos)
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0)
 
-    const uTime  = gl.getUniformLocation(prog, 'uTime')
-    const uRes   = gl.getUniformLocation(prog, 'uRes')
-    const uMouse = gl.getUniformLocation(prog, 'uMouse')
+    const uTime   = gl.getUniformLocation(prog, 'uTime')
+    const uRes    = gl.getUniformLocation(prog, 'uRes')
+    const uMouse  = gl.getUniformLocation(prog, 'uMouse')
+    const uTexU   = gl.getUniformLocation(prog, 'uTex')
+    const uHasTex = gl.getUniformLocation(prog, 'uHasTex')
+    const uTexRes = gl.getUniformLocation(prog, 'uTexRes')
+
+    // ── Seabed photo as a WebGL texture (subtle, refracted under the water) ──
+    let disposed = false
+    gl.uniform1f(uHasTex, 0)
+    gl.uniform2f(uTexRes, 1, 1)
+    const tex = gl.createTexture()
+    gl.bindTexture(gl.TEXTURE_2D, tex)
+    // 1×1 dark placeholder until the image decodes (avoids a flash)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([6, 18, 30, 255]))
+    gl.uniform1i(uTexU, 0)
+    const img = new Image()
+    img.onload = () => {
+      if (disposed) return
+      gl.bindTexture(gl.TEXTURE_2D, tex)
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
+      // Non-power-of-2 safe params: clamp + linear, no mipmaps
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.uniform2f(uTexRes, img.naturalWidth, img.naturalHeight)
+      gl.uniform1f(uHasTex, 1)
+    }
+    img.src = '/seabed.png'
 
     let aspect = 1
     const resize = () => {
@@ -351,12 +409,14 @@ export function OceanShader() {
     tick()
 
     return () => {
+      disposed = true
       cancelAnimationFrame(rafId)
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('resize', resize)
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerleave', onPointerLeave)
       gl.deleteBuffer(buf)
+      gl.deleteTexture(tex)
       gl.deleteProgram(prog)
     }
   }, [])
